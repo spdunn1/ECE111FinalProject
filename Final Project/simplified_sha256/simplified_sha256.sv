@@ -147,7 +147,7 @@ begin
       if (offset > 0 && offset <= NUM_OF_WORDS)
         message[offset - 1] <= mem_read_data;
 
-      if (offset == NUM_OF_WORDS +1) begin
+      if (offset == NUM_OF_WORDS) begin
         offset <= 0;
         state <= BLOCK;
       end
@@ -200,7 +200,10 @@ begin
       end 
 
       else begin
-          state <= WRITE; 
+        cur_we   <= 1'b1;
+        cur_addr <= output_addr;
+        offset   <= 0;
+        state    <= WRITE; 
       end
     end
 
@@ -212,15 +215,33 @@ begin
 	  // 64 processing rounds steps for 512-bit block 
       if (i < 64) begin
         // word expansion
-        if (i >= 16) begin
-            for (int n = 0; n < 15; n++) w[n] <= w[n+1];
-            w[15] <= wtnew();
-        end
-        // compression
-        {a,b,c,d,e,f,g,h} <= sha256_op(a, b, c, d, e, f, g, h, w[0], i);
-        i <= i + 1;
+          if (i < 15) begin
+             // Rounds 0-14: just use w[i] directly, don't shift yet
+             {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, h, w[i], i);
+          end
+          else begin
+             {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, h, w[15], i);
+             
+             //shift values - hardcoded to fix loop issue
+             w[0]  <= w[1];
+             w[1]  <= w[2];
+             w[2]  <= w[3];
+             w[3]  <= w[4];
+             w[4]  <= w[5];
+             w[5]  <= w[6];
+             w[6]  <= w[7];
+             w[7]  <= w[8];
+             w[8]  <= w[9];
+             w[9]  <= w[10];
+             w[10] <= w[11];
+             w[11] <= w[12];
+             w[12] <= w[13];
+             w[13] <= w[14];
+             w[14] <= w[15];
+             w[15] <= wtnew();
+          end
+          i <= i + 1;
       end 
-
       else begin
           // accumulating hash
           h0 <= h0 + a;  
@@ -232,7 +253,7 @@ begin
           h6 <= h6 + g;  
           h7 <= h7 + h;
           j <= j + 1;
-          state <= (j == num_blocks - 1) ? WRITE : BLOCK;
+          state <= BLOCK;
       end
     end
 
@@ -244,35 +265,45 @@ begin
       case (offset)
           0: begin 
             cur_addr <= output_addr;     
-            cur_write_data <= h0; offset <= 1; 
+            cur_write_data <= h0; 
+            offset <= 1; 
           end
           1: begin 
             cur_addr <= output_addr + 1; 
-            cur_write_data <= h1; offset <= 2; 
+            cur_write_data <= h1; 
+            offset <= 2; 
           end
           2: begin 
             cur_addr <= output_addr + 2; 
-            cur_write_data <= h2; offset <= 3; 
+            cur_write_data <= h2; 
+            offset <= 3; 
           end
           3: begin 
             cur_addr <= output_addr + 3; 
-            cur_write_data <= h3; offset <= 4; 
+            cur_write_data <= h3; 
+            offset <= 4; 
           end
           4: begin 
             cur_addr <= output_addr + 4; 
-            cur_write_data <= h4; offset <= 5; 
+            cur_write_data <= h4; 
+            offset <= 5; 
           end
           5: begin 
             cur_addr <= output_addr + 5; 
-            cur_write_data <= h5; offset <= 6; 
+            cur_write_data <= h5; 
+            offset <= 6; 
           end
           6: begin 
             cur_addr <= output_addr + 6; 
-            cur_write_data <= h6; offset <= 7; 
+            cur_write_data <= h6; 
+            offset <= 7; 
           end
-          7: begin
-              cur_addr       <= output_addr + 7;
-              cur_write_data <= h7;
+          7: begin 
+            cur_addr <= output_addr + 7; 
+            cur_write_data <= h7; 
+            offset <= 8; 
+          end
+          8: begin
               cur_we         <= 1'b0;
               offset         <= 0;
               state          <= IDLE;
@@ -282,7 +313,7 @@ begin
   endcase
 end
 
-// Generate done when SHA256 hash computation has finished and moved to IDLE state
+// Done after has complete and back to IDLE
 assign done = (state == IDLE);
 
 endmodule
