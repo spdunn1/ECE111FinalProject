@@ -97,6 +97,19 @@ function logic [31:0] rightrotate(input logic [31:0] x, input logic [ 7:0] r);
 rightrotate = (x >> r) | (x << (32 - r));
 endfunction
 
+always_comb begin
+   case (offset)
+      0: cur_write_data = h0;
+      1: cur_write_data = h1;
+      2: cur_write_data = h2;
+      3: cur_write_data = h3;
+      4: cur_write_data = h4;
+      5: cur_write_data = h5;
+      6: cur_write_data = h6;
+      7: cur_write_data = h7;
+      default: cur_write_data = 32'h00000000;
+   endcase
+end
 
 // SHA-256 FSM 
 // Get a BLOCK from the memory, COMPUTE Hash output using SHA256 function
@@ -261,55 +274,15 @@ begin
     // h0 to h7 after compute stage has final computed hash value
     // write back these h0 to h7 to memory starting from output_addr
     WRITE: begin
-      cur_we <= 1'b1;
-      case (offset)
-          0: begin 
-            cur_addr <= output_addr;     
-            cur_write_data <= h0; 
-            offset <= 1; 
-          end
-          1: begin 
-            cur_addr <= output_addr + 1; 
-            cur_write_data <= h1; 
-            offset <= 2; 
-          end
-          2: begin 
-            cur_addr <= output_addr + 2; 
-            cur_write_data <= h2; 
-            offset <= 3; 
-          end
-          3: begin 
-            cur_addr <= output_addr + 3; 
-            cur_write_data <= h3; 
-            offset <= 4; 
-          end
-          4: begin 
-            cur_addr <= output_addr + 4; 
-            cur_write_data <= h4; 
-            offset <= 5; 
-          end
-          5: begin 
-            cur_addr <= output_addr + 5; 
-            cur_write_data <= h5; 
-            offset <= 6; 
-          end
-          6: begin 
-            cur_addr <= output_addr + 6; 
-            cur_write_data <= h6; 
-            offset <= 7; 
-          end
-          7: begin 
-            cur_addr <= output_addr + 7; 
-            cur_write_data <= h7; 
-            offset <= 8; 
-          end
-          8: begin
-              cur_we         <= 1'b0;
-              offset         <= 0;
-              state          <= IDLE;
-          end
-      endcase
-    end
+      if(offset ==7) begin
+		cur_we <= 1'b0;
+		offset <= 0;
+		state <= IDLE;
+		end 
+		else begin	
+			offset <= offset + 1;
+		end 
+	end
   endcase
 end
 
