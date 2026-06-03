@@ -22,11 +22,9 @@ module bitcoin_hash (
     typedef enum logic [3:0] {
         IDLE,
         READ_MEM,
-        PH1_START,       PH1_WAIT,
-        PH2_PASS1_START, PH2_PASS1_WAIT,
-        PH3_PASS1_START, PH3_PASS1_WAIT,
-        PH2_PASS2_START, PH2_PASS2_WAIT,
-        PH3_PASS2_START, PH3_PASS2_WAIT,
+        PH1_START, PH1_WAIT,
+        PH2_START, PH2_WAIT,
+		  PH3_START, PH3_WAIT,
         WRITE_OUT,
         DONE_ST
     } state_t;
@@ -38,20 +36,20 @@ module bitcoin_hash (
     logic [4:0]  write_cnt;
     logic [31:0] msg_reg [0:18];       // Stores the 19-word block header [cite: 424]
     logic [31:0] H_ph1 [0:7];          // Intermediate Hash from Phase 1 [cite: 355]
-    logic [31:0] H_ph2 [0:7][0:7];     // Intermediate Hashes from Phase 2 (8 parallel)
+    logic [31:0] H_ph2 [0:15][0:7];     // Intermediate Hashes from Phase 2 (8 parallel)
     logic [31:0] H0_final [0:15];      // Final H0 hashes for all 16 nonces [cite: 375, 444]
 
     // Interfaces for the 8 instantiated SHA256 modules
-    logic [31:0] sha_block_in [0:7][0:15];
-    logic [31:0] sha_H_in     [0:7][0:7];
-    logic [31:0] sha_H_out    [0:7][0:7];
-    logic        sha_start    [0:7];
-    logic        sha_done     [0:7];
+    logic [31:0] sha_block_in [0:15][0:15];
+    logic [31:0] sha_H_in     [0:15][0:7];
+    logic [31:0] sha_H_out    [0:15][0:7];
+    logic        sha_start    [0:15];
+    logic        sha_done     [0:15];
 
-    // Instantiate exactly 8 SHA256 units to fit within FPGA limits 
+    // Instantiate 16 SHA256 units
     genvar i;
     generate
-        for (i = 0; i < 8; i++) begin : sha_gen
+        for (i = 0; i < 16; i++) begin : sha_gen
             sha256 sha_inst (
                 .clk(clk),
                 .reset_n(reset_n),
@@ -67,7 +65,7 @@ module bitcoin_hash (
     // Combinational routing block: Handles input mapping for the 8 SHA256 instances 
     always_comb begin
         // Default assignments to prevent inferred latches
-        for (int j = 0; j < 8; j++) begin
+        for (int j = 0; j < 16; j++) begin
             sha_start[j] = 1'b0;
             for (int k = 0; k < 16; k++) sha_block_in[j][k] = 32'd0;
             for (int k = 0; k < 8; k++)  sha_H_in[j][k]     = H_INIT[k];
@@ -81,26 +79,27 @@ module bitcoin_hash (
                 for (int k = 0; k < 8; k++)  sha_H_in[0][k]     = H_INIT[k];
             end
             
-            PH2_PASS1_START, PH2_PASS2_START: begin
+            PH2_START: begin
                 // Phase 2: Compute 2nd block of 1st hash for 8 nonces concurrently [cite: 354, 390]
-                for (int j = 0; j < 8; j++) begin
+                for (int j = 0; j < 16; j++) begin
                     sha_start[j]       = 1'b1;
                     sha_block_in[j][0] = msg_reg[16];
                     sha_block_in[j][1] = msg_reg[17];
                     sha_block_in[j][2] = msg_reg[18];
-                    // Map Nonces 0-7 for Pass 1, and 8-15 for Pass 2
-                    sha_block_in[j][3] = (state == PH2_PASS1_START) ? 32'(j) : 32'(j + 8); 
-                    sha_block_in[j][4] = 32'h8000_0000; // Padding
-                    for (int k = 5; k < 15; k++) sha_block_in[j][k] = 32'd0;
-                    sha_block_in[j][15] = 32'd640;      // Length padding [cite: 356]
-                    for (int k = 0; k < 8; k++)  sha_H_in[j][k] = H_ph1[k]; // Carried over from Phase 1 [cite: 355]
+                    
+						  sha_block_in[j][3] = 32'(j); 
+        
+						  sha_block_in[j][4] = 32'h8000_0000;
+						  for (int k = 5; k < 15; k++) sha_block_in[j][k] = 32'd0;
+						  sha_block_in[j][15] = 32'd640;
+						  for (int k = 0; k < 8; k++)  sha_H_in[j][k] = H_ph1[k];
                 end
             end
             
-            PH3_PASS1_START, PH3_PASS2_START: begin
-                // Phase 3: Compute final hash. 8 instances concurrently [cite: 358]
-                for (int j = 0; j < 8; j++) begin
-                    sha_start[j]       = 1'b1;
+            PH3_START: begin
+                // Phase 3: Compute final hash
+                for (int j = 0; j < 16; j++) begin
+                    sha_start[j] = 1'b1;
                     for (int k = 0; k < 8; k++) sha_block_in[j][k] = H_ph2[j][k]; // Output of Phase 2
                     sha_block_in[j][8] = 32'h8000_0000;
                     for (int k = 9; k < 15; k++) sha_block_in[j][k] = 32'd0;
@@ -151,57 +150,34 @@ module bitcoin_hash (
                     end
                 end
 
-                // --- PHASE 1 (Single Execution) ---
-                PH1_START: state <= PH1_WAIT;
-                
-                PH1_WAIT: begin
-                    if (sha_done[0]) begin
-                        for (int j = 0; j < 8; j++) H_ph1[j] <= sha_H_out[0][j];
-                        state <= PH2_PASS1_START;
-                    end
-                end
+                // --- PHASE 1 ---
+						PH1_START: state <= PH1_WAIT;
+						PH1_WAIT: begin
+							 if (sha_done[0]) begin
+								  for (int j = 0; j < 8; j++) H_ph1[j] <= sha_H_out[0][j];
+								  state <= PH2_START; // Go to Phase 2
+							 end
+						end
 
-                // --- FIRST PASS (Nonces 0-7) ---
-                PH2_PASS1_START: state <= PH2_PASS1_WAIT;
-                
-                PH2_PASS1_WAIT: begin
-                    if (sha_done[0]) begin
-                        for (int j = 0; j < 8; j++) begin
-                            for (int k = 0; k < 8; k++) H_ph2[j][k] <= sha_H_out[j][k];
-                        end
-                        state <= PH3_PASS1_START;
-                    end
-                end
+						// --- PHASE 2 (All 16 Nonces) ---
+						PH2_START: state <= PH2_WAIT;
+						PH2_WAIT: begin
+							 if (sha_done[0]) begin
+								  for (int j = 0; j < 16; j++) begin // Change to 16
+										for (int k = 0; k < 8; k++) H_ph2[j][k] <= sha_H_out[j][k];
+								  end
+								  state <= PH3_START; // Go directly to merged Phase 3
+							 end
+						end
 
-                PH3_PASS1_START: state <= PH3_PASS1_WAIT;
-                
-                PH3_PASS1_WAIT: begin
-                    if (sha_done[0]) begin
-                        for (int j = 0; j < 8; j++) H0_final[j] <= sha_H_out[j][0];
-                        state <= PH2_PASS2_START;
-                    end
-                end
-
-                // --- SECOND PASS (Nonces 8-15) ---
-                PH2_PASS2_START: state <= PH2_PASS2_WAIT;
-                
-                PH2_PASS2_WAIT: begin
-                    if (sha_done[0]) begin
-                        for (int j = 0; j < 8; j++) begin
-                            for (int k = 0; k < 8; k++) H_ph2[j][k] <= sha_H_out[j][k];
-                        end
-                        state <= PH3_PASS2_START;
-                    end
-                end
-
-                PH3_PASS2_START: state <= PH3_PASS2_WAIT;
-                
-                PH3_PASS2_WAIT: begin
-                    if (sha_done[0]) begin
-                        for (int j = 0; j < 8; j++) H0_final[j + 8] <= sha_H_out[j][0];
-                        state <= WRITE_OUT;
-                    end
-                end
+						// --- PHASE 3 (All 16 Nonces) ---
+						PH3_START: state <= PH3_WAIT;
+						PH3_WAIT: begin
+							 if (sha_done[0]) begin
+								  for (int j = 0; j < 16; j++) H0_final[j] <= sha_H_out[j][0]; // Change to 16, no +8 offset
+								  state <= WRITE_OUT; // Go straight to writing!
+							 end
+						end
 
                 // --- MEMORY WRITE ---
                 WRITE_OUT: begin
