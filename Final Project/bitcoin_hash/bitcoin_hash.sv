@@ -143,16 +143,34 @@ module bitcoin_hash (
                         msg_reg[read_cnt - 2] <= mem_read_data;
                     end
 
-                    if (read_cnt == 20) begin
+						  read_cnt <= read_cnt + 1;
+						  
+						  // read_cnt == 17 ensures words 0-15 are loaded, ready for phase 1
+                    if (read_cnt == 17) begin
                         state <= PH1_START;
-                    end else begin
-                        read_cnt <= read_cnt + 1;
                     end
                 end
 
                 // --- PHASE 1 ---
-						PH1_START: state <= PH1_WAIT;
+						PH1_START: begin
+							state <= PH1_WAIT;
+						
+							// Request the final word (index 18)
+							if (read_cnt < 19) begin
+								mem_addr <= message_addr + 16'(read_cnt);
+							end
+							// Capture word 16
+							msg_reg[read_cnt - 2] <= mem_read_data;
+							read_cnt <= read_cnt + 1; // Increment to 19
+						end
+						
 						PH1_WAIT: begin
+							 // Capture the final words (17 and 18) as they arrive
+							 if (read_cnt <= 20) begin
+								  msg_reg[read_cnt - 2] <= mem_read_data;
+								  read_cnt <= read_cnt + 1;
+							 end
+							 
 							 if (sha_done[0]) begin
 								  for (int j = 0; j < 8; j++) H_ph1[j] <= sha_H_out[0][j];
 								  state <= PH2_START; // Go to Phase 2

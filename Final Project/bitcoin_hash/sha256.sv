@@ -17,6 +17,8 @@ module sha256 (
     logic [31:0] h_reg [0:7]; // Registers to hold the incoming H_in for final accumulation
     logic [31:0] a, b, c, d, e, f, g, h;
     logic [6:0]  i;           // Round counter
+	 logic [31:0] wkh_reg; // Pipeline register for W[t] + K[t] + H[t]
+
 
     // SHA256 K constants
     parameter int k[0:63] = '{
@@ -36,12 +38,12 @@ module sha256 (
     endfunction
 
     // SHA256 hash round
-    function logic [255:0] sha256_op(input logic [31:0] a, b, c, d, e, f, g, h, w, input logic [7:0] t);
+    function logic [255:0] sha256_op(input logic [31:0] a, b, c, d, e, f, g, wk);
         logic [31:0] S1, S0, ch, maj, t1, t2; 
         begin
             S1 = rightrotate(e, 6) ^ rightrotate(e, 11) ^ rightrotate(e, 25);
             ch = (e & f) ^ ((~e) & g);
-            t1 = h + S1 + ch + k[t] + w;
+            t1 = S1 + ch + wk;
             S0 = rightrotate(a, 2) ^ rightrotate(a, 13) ^ rightrotate(a, 22);
             maj = (a & b) ^ (a & c) ^ (b & c);
             t2 = S0 + maj;
@@ -54,7 +56,7 @@ module sha256 (
         logic [31:0] s0, s1;
         s0 = rightrotate(w[1], 7) ^ rightrotate(w[1], 18) ^ (w[1] >> 3);
         s1 = rightrotate(w[14], 17) ^ rightrotate(w[14], 19) ^ (w[14] >> 10);
-        wtnew = w[0] + s0 + w[9] + s1;
+        wtnew = (w[0] + s0) + (w[9] + s1);
     endfunction
 
     // SHA-256 Computational Engine FSM
@@ -81,6 +83,8 @@ module sha256 (
                         // Load the incoming 16-word block
                         for (int k = 0; k < 16; k++) w[k] <= block_in[k];
 
+								wkh_reg <= block_in[0] + k[0] + H_in[7];
+
                         i     <= 0;
                         state <= COMPUTE;
                     end
@@ -89,21 +93,31 @@ module sha256 (
                 COMPUTE: begin
                     // 64 processing rounds
                     if (i < 64) begin
-                        if (i < 15) begin
-                            // Rounds 0-14: Use w[i] directly, do not shift window yet
-                            {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, h, w[i], i);
-                        end else begin
-                            // Rounds 15-63: Compute hash and slide the 16-word window
-                            {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, h, w[15], i);
-                            
-                            w[0]  <= w[1];  w[1]  <= w[2];  w[2]  <= w[3];
-                            w[3]  <= w[4];  w[4]  <= w[5];  w[5]  <= w[6];
-                            w[6]  <= w[7];  w[7]  <= w[8];  w[8]  <= w[9];
-                            w[9]  <= w[10]; w[10] <= w[11]; w[11] <= w[12];
-                            w[12] <= w[13]; w[13] <= w[14]; w[14] <= w[15];
-                            w[15] <= wtnew();
-                        end
-                        i <= i + 1;
+                        // 1. Process current round using the pipelined wk_reg
+							  {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, wkh_reg);
+
+							  // 2. Prepare the window and wk_reg for the NEXT round (i + 1)
+							  if (i < 15) begin
+									// Rounds 0-14: The next W is simply the next element in the array
+									wkh_reg <= w[i+1] + k[i+1] + g;
+							  end else begin
+									// Slide window
+									w[0]  <= w[1];  w[1]  <= w[2];  w[2]  <= w[3];
+									w[3]  <= w[4];  w[4]  <= w[5];  w[5]  <= w[6];
+									w[6]  <= w[7];  w[7]  <= w[8];  w[8]  <= w[9];
+									w[9]  <= w[10]; w[10] <= w[11]; w[11] <= w[12];
+									w[12] <= w[13]; w[13] <= w[14]; w[14] <= w[15];
+									
+									// Calculate W for the next round
+									w[15] <= wtnew();
+									
+									// Pre-compute wkh_reg for the next round
+									// We guard with (i < 63) to prevent an out-of-bounds read on k[64]
+									if (i < 63) begin
+										 wkh_reg <= wtnew() + k[i+1] + g;
+									end
+							  end
+							  i <= i + 1;
                     end else begin
                         // Accumulate final hash values and signal completion
                         H_out[0] <= h_reg[0] + a;
