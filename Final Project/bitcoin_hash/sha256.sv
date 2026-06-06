@@ -8,7 +8,7 @@ module sha256 (
     output logic        done
 );
 
-    // FSM state variables 
+    // FSM state variables
     typedef enum logic [1:0] {IDLE, COMPUTE} state_t;
     state_t state;
 
@@ -17,7 +17,8 @@ module sha256 (
     logic [31:0] h_reg [0:7]; // Registers to hold the incoming H_in for final accumulation
     logic [31:0] a, b, c, d, e, f, g, h;
     logic [6:0]  i;           // Round counter
-	 logic [31:0] wkh_reg; // Pipeline register for W[t] + K[t] + H[t]
+    logic [31:0] wkh_reg;     // Pipeline register for W[t] + K[t] + H[t]
+    logic [31:0] k_next_reg;
 
 
     // SHA256 K constants
@@ -39,7 +40,7 @@ module sha256 (
 
     // SHA256 hash round
     function logic [255:0] sha256_op(input logic [31:0] a, b, c, d, e, f, g, wk);
-        logic [31:0] S1, S0, ch, maj, t1, t2; 
+        logic [31:0] S1, S0, ch, maj, t1, t2;
         begin
             S1 = rightrotate(e, 6) ^ rightrotate(e, 11) ^ rightrotate(e, 25);
             ch = (e & f) ^ ((~e) & g);
@@ -71,9 +72,9 @@ module sha256 (
                     done <= 1'b0;
                     if (start) begin
                         // Capture initial hash states for final accumulation
-                        h_reg[0] <= H_in[0]; h_reg[1] <= H_in[1]; 
+                        h_reg[0] <= H_in[0]; h_reg[1] <= H_in[1];
                         h_reg[2] <= H_in[2]; h_reg[3] <= H_in[3];
-                        h_reg[4] <= H_in[4]; h_reg[5] <= H_in[5]; 
+                        h_reg[4] <= H_in[4]; h_reg[5] <= H_in[5];
                         h_reg[6] <= H_in[6]; h_reg[7] <= H_in[7];
 
                         // Load initial working variables
@@ -83,7 +84,8 @@ module sha256 (
                         // Load the incoming 16-word block
                         for (int k = 0; k < 16; k++) w[k] <= block_in[k];
 
-								wkh_reg <= block_in[0] + k[0] + H_in[7];
+                        k_next_reg <= k[1];
+                        wkh_reg    <= block_in[0] + k[0] + H_in[7];
 
                         i     <= 0;
                         state <= COMPUTE;
@@ -93,31 +95,28 @@ module sha256 (
                 COMPUTE: begin
                     // 64 processing rounds
                     if (i < 64) begin
-                        // 1. Process current round using the pipelined wk_reg
-							  {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, wkh_reg);
+                        // 1. Process current round using the pipelined wkh_reg
+                        {a, b, c, d, e, f, g, h} <= sha256_op(a, b, c, d, e, f, g, wkh_reg);
 
-							  // 2. Prepare the window and wk_reg for the NEXT round (i + 1)
-							  if (i < 15) begin
-									// Rounds 0-14: The next W is simply the next element in the array
-									wkh_reg <= w[i+1] + k[i+1] + g;
-							  end else begin
-									// Slide window
-									w[0]  <= w[1];  w[1]  <= w[2];  w[2]  <= w[3];
-									w[3]  <= w[4];  w[4]  <= w[5];  w[5]  <= w[6];
-									w[6]  <= w[7];  w[7]  <= w[8];  w[8]  <= w[9];
-									w[9]  <= w[10]; w[10] <= w[11]; w[11] <= w[12];
-									w[12] <= w[13]; w[13] <= w[14]; w[14] <= w[15];
-									
-									// Calculate W for the next round
-									w[15] <= wtnew();
-									
-									// Pre-compute wkh_reg for the next round
-									// We guard with (i < 63) to prevent an out-of-bounds read on k[64]
-									if (i < 63) begin
-										 wkh_reg <= wtnew() + k[i+1] + g;
-									end
-							  end
-							  i <= i + 1;
+                        // 2. Always slide the window every round.
+                        //    After k slides w[0]=W[k], w[1]=W[k+1].
+                        //    wtnew() at round i yields W[i+16], building the full schedule.
+                        w[0]  <= w[1];  w[1]  <= w[2];  w[2]  <= w[3];
+                        w[3]  <= w[4];  w[4]  <= w[5];  w[5]  <= w[6];
+                        w[6]  <= w[7];  w[7]  <= w[8];  w[8]  <= w[9];
+                        w[9]  <= w[10]; w[10] <= w[11]; w[11] <= w[12];
+                        w[12] <= w[13]; w[13] <= w[14]; w[14] <= w[15];
+                        w[15] <= wtnew();
+
+                        // 3. Pre-compute wkh_reg for the next round.
+                        //    w[1] (pre-shift value) = W[i+1]; k_next_reg = k[i+1].
+                        //    Neither requires i as a mux select — eliminates the critical path.
+                        if (i < 63) begin
+                            wkh_reg    <= w[1] + k_next_reg + g;
+                            k_next_reg <= (i < 62) ? k[i+2] : 32'h00000000;
+                        end
+
+                        i <= i + 1;
                     end else begin
                         // Accumulate final hash values and signal completion
                         H_out[0] <= h_reg[0] + a;
@@ -133,7 +132,7 @@ module sha256 (
                         state <= IDLE;
                     end
                 end
-                
+
                 default: state <= IDLE;
             endcase
         end
